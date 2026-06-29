@@ -32,7 +32,7 @@ const Attendance = mongoose.model("attendance", AttendanceSchema);
 const Student = mongoose.model("student", StudentSchema);
 const ActiveOrInactive = mongoose.model(
   "activeOrInactive",
-  ActiveOrInActiveSchema
+  ActiveOrInActiveSchema,
 );
 function generateSixDigits() {
   return Math.floor(100000 + Math.random() * 900000);
@@ -59,34 +59,31 @@ router.get("/students", async (req, res) => {
   const limit = Number(req.query.limit) || 5;
   const { status, code, name, phone } = req.query;
   const matchData = () => {
+    const match = {};
+
     if (code) {
-      return {
-        code: Number(code),
-      };
+      match.code = Number(code);
     }
 
     if (name) {
-      return {
-        $expr: {
-          $regexMatch: {
-            input: "$name",
-            regex: name,
-            options: "i",
-          },
+      match.$expr = {
+        $regexMatch: {
+          input: "$name",
+          regex: name,
+          options: "i",
         },
       };
     }
+
     if (phone) {
-      return {
-        $or: [
-          { phone_1: { $regex: phone, $options: "i" } },
-          { phone_2: { $regex: phone, $options: "i" } },
-          { phone_3: { $regex: phone, $options: "i" } },
-        ],
-      };
-    } else {
-      return {};
+      match.$or = [
+        { phone_1: { $regex: phone, $options: "i" } },
+        { phone_2: { $regex: phone, $options: "i" } },
+        { phone_3: { $regex: phone, $options: "i" } },
+      ];
     }
+
+    return match;
   };
 
   const matchActiveOrInactive = () => {
@@ -94,9 +91,9 @@ router.get("/students", async (req, res) => {
       const start = new Date(startDate);
       start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
-      
+
       // Check if the start date is in current month
-      if ((start.getMonth() + 1) === (today.getMonth() + 1)) {
+      if (start.getMonth() + 1 === today.getMonth() + 1) {
         // For current month, just check active_status in Student table
         return { active_status: "active" };
       } else {
@@ -113,14 +110,14 @@ router.get("/students", async (req, res) => {
                   activeOrInactiveDetails: {
                     $not: {
                       $elemMatch: {
-                        activeStatus: "in_active"
-                      }
-                    }
-                  }
-                }
-              ]
-            }
-          ]
+                        activeStatus: "in_active",
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
         };
       }
     } else {
@@ -231,68 +228,48 @@ router.get("/students", async (req, res) => {
 });
 
 router.get("/all-students", async (req, res) => {
-  // const {page , limit } = req.query;
-
   const page = Number(req.query.page) || 1;
   const limit = Number(req.query.limit) || 5;
   const { status, code, name, phone } = req.query;
+
   const matchData = () => {
+    const match = {};
+
     if (code) {
-      return {
-        code: Number(code),
-      };
+      match.code = Number(code);
     }
 
     if (status) {
-      return {
-        active_status: status,
-      };
+      match.active_status = status;
     }
 
     if (name) {
-      return {
-        $expr: {
-          $regexMatch: {
-            input: "$name",
-            regex: name,
-            options: "i",
-          },
-        },
+      match.$expr = {
+        $regexMatch: { input: "$name", regex: name, options: "i" },
       };
     }
+
     if (phone) {
-      return {
-        $or: [
-          { phone_1: { $regex: phone, $options: "i" } },
-          { phone_2: { $regex: phone, $options: "i" } },
-          { phone_3: { $regex: phone, $options: "i" } },
-        ],
-      };
-    } else {
-      return {};
+      match.$or = [
+        { phone_1: { $regex: phone, $options: "i" } },
+        { phone_2: { $regex: phone, $options: "i" } },
+        { phone_3: { $regex: phone, $options: "i" } },
+      ];
     }
+
+    return match;
   };
 
   await Student.aggregate([
-    // {
-    //   $lookup: {
-    //     from: ActiveOrInactive.collection.name,
-    //     localField: "_id",
-    //     foreignField: "student",
-    //     as: "activeOrInactiveDetails",
-    //   },
-    // },
     {
       $lookup: {
-        from: ActiveOrInactive.collection.name, // Name of the other collection
+        from: ActiveOrInactive.collection.name,
         let: { studentId: "$_id" },
         pipeline: [
           {
             $match: {
               $and: [
-                {
-                  $expr: { $eq: ["$student", "$$studentId"] },
-                },
+                { $expr: { $eq: ["$student", "$$studentId"] } },
                 {
                   activatedDate: {
                     $gte: new Date(startDate),
@@ -304,27 +281,55 @@ router.get("/all-students", async (req, res) => {
           },
           { $project: { student: 1, activatedDate: 1, activeStatus: 1 } },
         ],
-        as: "activeOrInactiveDetails", // Output array field
+        as: "activeOrInactiveDetails",
       },
     },
     {
-      $match: {
-        ...matchData(),
-        // active_status: "active",
+      $match: { ...matchData() },
+    },
+    // ── Filter empty/null values then convert relative string IDs → ObjectIds ──
+    {
+      $addFields: {
+        relative: {
+          $map: {
+            input: {
+              $filter: {
+                input: "$relative",
+                as: "r",
+                cond: {
+                  $and: [{ $ne: ["$$r", ""] }, { $ne: ["$$r", null] }],
+                },
+              },
+            },
+            as: "r",
+            in: { $toObjectId: "$$r" },
+          },
+        },
+      },
+    },
+    // ── Lookup relative students and return only _id and name ──
+    {
+      $lookup: {
+        from: Student.collection.name,
+        let: { relativeIds: "$relative" },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $in: ["$_id", "$$relativeIds"] },
+            },
+          },
+          { $project: { _id: 1, name: 1 } },
+        ],
+        as: "relative",
       },
     },
     {
-      $sort: {
-        // name: 1,
-        code: 1,
-      },
+      $sort: { code: 1 },
     },
     {
       $facet: {
         metaData: [
-          {
-            $count: "total",
-          },
+          { $count: "total" },
           {
             $addFields: {
               pageNumber: Number(page),
@@ -334,12 +339,8 @@ router.get("/all-students", async (req, res) => {
         ],
         totalAmount: [{ $group: { _id: null, total: { $sum: "$amount" } } }],
         data: [
-          {
-            $skip: Number((page - 1) * limit),
-          },
-          {
-            $limit: Number(limit),
-          },
+          { $skip: Number((page - 1) * limit) },
+          { $limit: Number(limit) },
         ],
       },
     },
@@ -348,7 +349,6 @@ router.get("/all-students", async (req, res) => {
     .then((data) => {
       console.log("students data =====>", data);
       let result = data[0];
-      // result.data = result.data.map(d=>{return {...d,activeOrInactiveDetails:d.activeOrInactiveDetails[0]?d.activeOrInactiveDetails[0]:{}}});
       result.metaData = {
         ...data[0].metaData[0],
         count: data[0]?.data?.length,
@@ -377,8 +377,8 @@ router.get("/students_name", async (req, res) => {
   const { active_status } = req.query;
 
   const matchActiveOrInactive = () => {
-      console.log(new Date(startDate).getMonth() + 2);
-        return { active_status: "active" };
+    console.log(new Date(startDate).getMonth() + 2);
+    return active_status ? { active_status: active_status } : {};
   };
   let user = await Student.aggregate([
     {
@@ -408,7 +408,7 @@ router.get("/students_name", async (req, res) => {
     },
     {
       $match: {
-        ...matchActiveOrInactive()
+        ...matchActiveOrInactive(),
       },
     },
     {
@@ -475,7 +475,7 @@ router.post(
     } else {
       res.status(400).json({ message: "no data found" });
     }
-  }
+  },
 );
 
 //Update one student Data
@@ -493,12 +493,12 @@ router.put(
           console.log(value);
           //  clientdb.disconnect()
           res.status(200).json({ message: "student updated successfuly" });
-        }
+        },
       );
     } else {
       res.status(400).json({ message: "no data found" });
     }
-  }
+  },
 );
 //search of data
 router.get("/search_student", async (req, res) => {
@@ -514,7 +514,7 @@ router.get("/search_student", async (req, res) => {
         {
           return d;
         }
-      })
+      }),
   );
   const filter = Object.keys(req.query)
     .filter((value) => value !== undefined)
@@ -646,7 +646,7 @@ router.post(
       .catch((err) => {
         res.status(400).json({ message: err.message });
       });
-  }
+  },
 );
 
 //Get payments
@@ -664,27 +664,28 @@ router.get("/get_payments", async (req, res) => {
     }
   };
 
-   const matchActiveOrInactivePay = () => {
+  const matchActiveOrInactivePay = () => {
     if (startDate) {
       console.log(new Date(startDate));
-      const start = new Date(startDate)
+      const start = new Date(startDate);
       start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
       console.log(start.getMonth());
-      
-      if ((start.getMonth() + 1) == (today.getMonth() + 1)) {
+
+      if (start.getMonth() + 1 == today.getMonth() + 1) {
         return { "studentDetails.active_status": "active" };
-      }else return {
-        activeOrInactiveDetails: {
-          $exists: true,
-          $not: {
-            $elemMatch: {
-              activeStatus: "in_active",
+      } else
+        return {
+          activeOrInactiveDetails: {
+            $exists: true,
+            $not: {
+              $elemMatch: {
+                activeStatus: "in_active",
+              },
             },
+            $ne: [],
           },
-          $ne: []
-        },
-      };
+        };
     } else {
       return {};
     }
@@ -814,7 +815,7 @@ router.get("/get_payments", async (req, res) => {
     },
     {
       $match: {
-        ...matchActiveOrInactivePay()
+        ...matchActiveOrInactivePay(),
       },
     },
     {
@@ -1009,12 +1010,12 @@ router.put(
           console.log(value);
           //  clientdb.disconnect()
           res.status(200).json({ message: "payment updated successfuly" });
-        }
+        },
       );
     } else {
       res.status(400).json({ message: "no data found" });
     }
-  }
+  },
 );
 
 //get students that not paid this month
@@ -1206,13 +1207,17 @@ router.get("/get_attendance", async (req, res) => {
   const today = new Date();
   //  today.setHours(0, 0, 0, 0);
   const matchData = () => {
-    if (code) {
-      return {
-        "studentDetails.code": Number(code),
-      };
+    const conditions = [];
+
+    if (code && String(code).trim() !== "") {
+      const parsedCode = Number(code);
+      if (!Number.isNaN(parsedCode)) {
+        conditions.push({ "studentDetails.code": parsedCode });
+      }
     }
-    if (name) {
-      return {
+
+    if (name && name.trim() !== "") {
+      conditions.push({
         $expr: {
           $regexMatch: {
             input: "$studentDetails.name",
@@ -1220,25 +1225,30 @@ router.get("/get_attendance", async (req, res) => {
             options: "i",
           },
         },
-      };
+      });
     }
-    if (phone) {
-      return {
+
+    if (phone && phone.trim() !== "") {
+      conditions.push({
         $or: [
           { "studentDetails.phone_1": { $regex: phone, $options: "i" } },
           { "studentDetails.phone_2": { $regex: phone, $options: "i" } },
           { "studentDetails.phone_3": { $regex: phone, $options: "i" } },
         ],
-      };
+      });
     }
-    if (date) {
-      return {
-        date: new Date(date), // Start date
-        // $lte: new Date(e) // End date
-      };
-    } else {
-      return {};
+
+    if (date && date.trim() !== "") {
+      conditions.push({
+        date: new Date(date),
+      });
     }
+
+    if (conditions.length === 0) return {};
+    if (conditions.length === 1) return conditions[0];
+
+    // ── Spread all conditions into a single flat match object ──
+    return Object.assign({}, ...conditions);
   };
   console.log(matchData());
   // const matchData = Object.keys(req.query).filter(value => value !== undefined).map(d => {
@@ -1248,7 +1258,7 @@ router.get("/get_attendance", async (req, res) => {
   //     return {}
   //   }
   // })
-  
+
   await Attendance.aggregate([
     {
       $lookup: {
@@ -1439,7 +1449,7 @@ router.post(
       .catch((err) => {
         res.status(400).json({ message: err.message });
       });
-  }
+  },
 );
 
 //Update one Attendance Data
@@ -1464,7 +1474,7 @@ router.put(
     } else {
       res.status(400).json({ message: "no data found" });
     }
-  }
+  },
 );
 
 //delete one Attendance Data
@@ -1503,22 +1513,23 @@ router.get("/reports", async (req, res) => {
   const matchActiveOrInactive = () => {
     if (startDate) {
       console.log(new Date(startDate));
-      const start = new Date(startDate)
+      const start = new Date(startDate);
       start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
       console.log(start.getMonth());
-      if ((start.getMonth() + 1) == (today.getMonth() + 1)) {
+      if (start.getMonth() + 1 == today.getMonth() + 1) {
         return { active_status: "active" };
-      } else return {
-        activeOrInactiveDetails: {
-          $exists: true,
-          $not: {
-            $elemMatch: {
-              activeStatus: "in_active",
+      } else
+        return {
+          activeOrInactiveDetails: {
+            $exists: true,
+            $not: {
+              $elemMatch: {
+                activeStatus: "in_active",
+              },
             },
           },
-        },
-      };
+        };
     } else {
       return {};
     }
@@ -1527,22 +1538,23 @@ router.get("/reports", async (req, res) => {
   const matchActiveOrInactivePay = () => {
     if (startDate) {
       console.log(new Date(startDate));
-      const start = new Date(startDate)
+      const start = new Date(startDate);
       start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
       console.log(start.getMonth());
-      if ((start.getMonth() + 1) == (today.getMonth() + 1)) {
+      if (start.getMonth() + 1 == today.getMonth() + 1) {
         return { "studentDetails.active_status": "active" };
-      }else return {
-        activeOrInactiveDetails: {
-          $exists: true,
-          $not: {
-            $elemMatch: {
-              activeStatus: "in_active",
+      } else
+        return {
+          activeOrInactiveDetails: {
+            $exists: true,
+            $not: {
+              $elemMatch: {
+                activeStatus: "in_active",
+              },
             },
           },
-        },
-      };
+        };
     } else {
       return {};
     }
@@ -1609,14 +1621,14 @@ router.get("/reports", async (req, res) => {
     },
     {
       $match: {
-        ...matchActiveOrInactive()
+        ...matchActiveOrInactive(),
       },
     },
     {
       $group: {
         _id: null, // Group all documents together
         totalAmount: { $sum: "$amount" }, // Sum the 'amount' field
-        totalCount: { $sum: 1 }
+        totalCount: { $sum: 1 },
       },
     },
   ]);
@@ -1628,24 +1640,24 @@ router.get("/reports", async (req, res) => {
     {
       $group: {
         _id: {
-          date: { $dateToString: { format: "%Y-%m-%d", date: "$date" } }
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
         },
-        totalAmount: { $sum: "$amount" }
-      }
+        totalAmount: { $sum: "$amount" },
+      },
     },
     {
       $project: {
         date: "$_id.date",
         totalAmount: 1,
-        _id: 0
-      }
+        _id: 0,
+      },
     },
     {
-      $sort:{
+      $sort: {
         date: 1,
-        totalAmount: -1
-      }
-    }
+        totalAmount: -1,
+      },
+    },
   ]);
 
   await Payment.aggregate([
@@ -1702,7 +1714,7 @@ router.get("/reports", async (req, res) => {
     },
     {
       $match: {
-        ...matchActiveOrInactivePay()
+        ...matchActiveOrInactivePay(),
       },
     },
     {
@@ -1718,10 +1730,10 @@ router.get("/reports", async (req, res) => {
     .then((data) => {
       console.log(data);
       console.log(amountOfAllStudents);
-      
+
       let newData = {
-        historyPayments:payedDays,
-        totalAmount:data[0]?.totalAmount || 0,
+        historyPayments: payedDays,
+        totalAmount: data[0]?.totalAmount || 0,
         amountOfAllStudents: amountOfAllStudents[0]?.totalAmount,
         totalCount: amountOfAllStudents[0]?.totalCount,
       };
@@ -1750,96 +1762,121 @@ router.post(
   "/import-students-xlsx",
   upload.single("file"),
   async (req, res) => {
-    console.log("file imported");
-    console.log(req.file.path);
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(req.file.path);
-    //  console.log(workbook.getWorksheet(1));
-    const worksheet = workbook.getWorksheet("Students"); // Assuming the data is in the first sheet
-    const totalRows = worksheet.rowCount; // Get the total number of rows in the worksheet
-    console.log(totalRows);
-    const columnIndexes = await getColumnIndexes(workbook, 1);
-    const studentsData = [];
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber > 1) {
-        // Assuming the first row contains headers
-        const student = {
-          code: row.getCell(1).value,
-          name: row.getCell(2).value,
-          phone_1: row.getCell(3).value,
-          // phone_2: row.getCell(columnIndexes['phone_2']).value,
-          // phone_3: row.getCell(columnIndexes['phone_3']).value,
-          // study_year: row.getCell(columnIndexes['study_year']).value,
-          // date: row.getCell(columnIndexes['date']).value,
-          // is_Azhar: row.getCell(columnIndexes['is_Azhar']).value,
-          // has_relative: row.getCell(columnIndexes['has_relative']).value,
-          // relative: row.getCell(columnIndexes['relative']).value,
-          // is_payment: row.getCell(columnIndexes['is_payment']).value,
-          // age: row.getCell(columnIndexes['age']).value,
-          // landline: row.getCell(columnIndexes['landline']).value,
-          // address: row.getCell(columnIndexes['address']).value,
-          // notes: row.getCell(columnIndexes['notes']).value,
-          // image: row.getCell(columnIndexes['image']).value,
-          // amount: row.getCell(columnIndexes['amount']).value,
-          // active_status: row.getCell(columnIndexes['active_status']).value,
-          phone_2: row.getCell(4).value,
-          phone_3: row.getCell(5).value,
-          study_year: row.getCell(6).value,
-          date: row.getCell(7).value,
-          is_Azhar: row.getCell(8).value,
-          has_relative: row.getCell(9).value,
-          // relative: row.getCell(10).value,
-          is_payment: row.getCell(10).value,
-          age: row.getCell(11).value,
-          landline: row.getCell(12).value,
-          address: row.getCell(13).value,
-          notes: row.getCell(14).value,
-          // image: row.getCell(16).value,
-          amount: row.getCell(15).value,
-          active_status: row.getCell(16).value,
-          // Map other fields as necessary
-        };
-        if (Object.values(student).some((value) => value)) {
-          // Check if the row is not empty
-          studentsData.push(student);
-        }
-      }
-    });
-    // console.log(rows.length);
-    // Skip the header row
-    // const dataRows = rows.slice(1);
-
-    //  console.log(dataRows.length);
-
-    // const students = dataRows.map((row) => ({
-    //   code: row.getCell(1).value,
-    //   name: row.getCell(2).value,
-    //   phone_1: row.getCell(3).value,
-    //   phone_2: row.getCell(4).value,
-    //   phone_3: row.getCell(5).value,
-    //   study_year: row.getCell(6).value,
-    //   date: row.getCell(7).value,
-    //   is_Azhar: row.getCell(8).value,
-    //   has_relative: row.getCell(9).value,
-    //   relative: row.getCell(10).value,
-    //   is_payment: row.getCell(11).value,
-    //   age: row.getCell(12).value,
-    //   landline: row.getCell(13).value,
-    //   address: row.getCell(14).value,
-    //   notes: row.getCell(15).value,
-    //   image: row.getCell(16).value,
-    //   amount: row.getCell(17).value,
-    //   active_status: row.getCell(18).value,
-    // }));
-    console.log(studentsData);
     try {
-      // await Student.insertMany(students);
-      res.send("Students imported successfully");
+      // ✅ Validate file exists
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(req.file.path);
+
+      const worksheet = workbook.getWorksheet("Students");
+
+      // ✅ Validate worksheet exists
+      if (!worksheet) {
+        return res
+          .status(400)
+          .json({ message: 'Sheet named "Students" not found in the file' });
+      }
+
+      const studentsData = [];
+      const errors = [];
+
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return; // skip header
+
+        const code = row.getCell(1).value;
+        const name = row.getCell(2).value;
+
+        // ✅ Validate required fields per row
+        if (!code || !name) {
+          errors.push(
+            `Row ${rowNumber}: missing required fields (code or name)`,
+          );
+          return;
+        }
+
+        const student = {
+          code: Number(code),
+          name: String(name).trim(),
+          phone_1: row.getCell(3).value
+            ? String(row.getCell(3).value).trim()
+            : null,
+          phone_2: row.getCell(4).value
+            ? String(row.getCell(4).value).trim()
+            : null,
+          phone_3: row.getCell(5).value
+            ? String(row.getCell(5).value).trim()
+            : null,
+          study_year: row.getCell(6).value
+            ? String(row.getCell(6).value).trim()
+            : null,
+          date: row.getCell(7).value ? new Date(row.getCell(7).value) : null,
+          is_Azhar: row.getCell(8).value
+            ? String(row.getCell(8).value).trim()
+            : null,
+          has_relative: row.getCell(9).value
+            ? String(row.getCell(9).value).trim()
+            : null,
+          is_payment: row.getCell(10).value
+            ? String(row.getCell(10).value).trim()
+            : null,
+          age: row.getCell(11).value ? Number(row.getCell(11).value) : null,
+          landline: row.getCell(12).value
+            ? String(row.getCell(12).value).trim()
+            : null,
+          address: row.getCell(13).value
+            ? String(row.getCell(13).value).trim()
+            : null,
+          notes: row.getCell(14).value
+            ? String(row.getCell(14).value).trim()
+            : null,
+          amount: row.getCell(15).value ? Number(row.getCell(15).value) : null,
+          active_status: row.getCell(16).value
+            ? String(row.getCell(16).value).trim()
+            : "active",
+        };
+
+        studentsData.push(student);
+      });
+
+      if (studentsData.length === 0) {
+        return res.status(400).json({
+          message: "No valid student rows found in the file",
+          errors,
+        });
+      }
+
+      // ✅ Upsert by code — update if exists, insert if not
+      const bulkOps = studentsData.map((student) => ({
+        updateOne: {
+          filter: { code: student.code },
+          update: { $set: student },
+          upsert: true, // insert if not found
+        },
+      }));
+
+      const result = await Student.bulkWrite(bulkOps);
+
+      // ✅ Clean up uploaded file after processing
+      const fs = require("fs");
+      fs.unlink(req.file.path, (err) => {
+        if (err) console.error("Failed to delete temp file:", err);
+      });
+
+      return res.status(200).json({
+        message: "Students imported successfully",
+        inserted: result.upsertedCount,
+        updated: result.modifiedCount,
+        total: studentsData.length,
+        skippedRows: errors.length > 0 ? errors : undefined,
+      });
     } catch (error) {
-      console.error(error);
-      res.status(500).send("Error importing students");
+      console.error("Import error:", error);
+      return res.status(500).json({ message: error.message });
     }
-  }
+  },
 );
 
 // Export data to XLSX file
@@ -1904,12 +1941,16 @@ router.post(
 
       // ✅ Fix 1: Validate required fields
       if (!student || !activeStatus || !activatedDate) {
-        return res.status(400).json({ message: "student, activeStatus, and activatedDate are required" });
+        return res
+          .status(400)
+          .json({
+            message: "student, activeStatus, and activatedDate are required",
+          });
       }
 
       // ✅ Fix 2: Compute date range fresh per request, not at module load time
       const activated = new Date(activatedDate);
-      const activatedMonth = activated.getMonth();   // 0-based
+      const activatedMonth = activated.getMonth(); // 0-based
       const activatedYear = activated.getFullYear();
 
       // Start = first day of the activated month at 00:00:00
@@ -1917,7 +1958,11 @@ router.post(
       // End = first day of NEXT month (used with $lt, so excludes end itself)
       const enDate = new Date(activatedYear, activatedMonth + 1, 1);
 
-      console.log("Range:", stDate.toLocaleDateString("en-CA"), enDate.toLocaleDateString("en-CA"));
+      console.log(
+        "Range:",
+        stDate.toLocaleDateString("en-CA"),
+        enDate.toLocaleDateString("en-CA"),
+      );
 
       // ✅ Fix 3: Check if the activated month is the current month
       const now = new Date();
@@ -1953,18 +1998,19 @@ router.post(
         value = await ActiveOrInactive.findByIdAndUpdate(
           new objectId(existingRecord._id),
           { ...req.body },
-          { new: true }
+          { new: true },
         );
       } else {
         value = await ActiveOrInactive.create({ ...req.body });
       }
 
-      return res.status(200).json({ message: "Successfully updated", data: value });
-
+      return res
+        .status(200)
+        .json({ message: "Successfully updated", data: value });
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
-  }
+  },
 );
 
 // Deactivated students only — optional month/date range (startDate + endDate)
@@ -1988,7 +2034,12 @@ router.get("/get-inactive-students", async (req, res) => {
     return res.status(400).json({ message: "Invalid startDate or endDate" });
   }
 
-  // ✅ Code + name + phone filters (AND combined)
+  const now = new Date();
+  const isCurrentMonth =
+    hasDateRange &&
+    parsedStartDate.getMonth() === now.getMonth() &&
+    parsedStartDate.getFullYear() === now.getFullYear();
+
   const buildSearchMatch = () => {
     const conditions = [];
 
@@ -1997,11 +2048,11 @@ router.get("/get-inactive-students", async (req, res) => {
       if (!Number.isNaN(parsedCode)) conditions.push({ code: parsedCode });
     }
 
-    if (name) {
+    if (name && name.trim() !== "") {
       conditions.push({ name: { $regex: escapeRegex(name), $options: "i" } });
     }
 
-    if (phone) {
+    if (phone && phone.trim() !== "") {
       conditions.push({
         $or: [
           { phone_1: { $regex: escapeRegex(phone), $options: "i" } },
@@ -2013,42 +2064,38 @@ router.get("/get-inactive-students", async (req, res) => {
 
     if (conditions.length === 0) return {};
     if (conditions.length === 1) return conditions[0];
-    return { $and: conditions };
+
+    return Object.assign({}, ...conditions);
   };
 
-  // ✅ Fix 1: Proper separation between no-range, current month, and past month
+  // ✅ Deactivated match logic
   const buildDeactivatedMatch = () => {
-    if (!hasDateRange) {
-      // No date filter → just check the Student's current active_status
+    if (!hasDateRange || isCurrentMonth) {
       return { active_status: "in_active" };
     }
 
-    const now = new Date();
-    const isCurrentMonth =
-      parsedStartDate.getMonth() === now.getMonth() &&
-      parsedStartDate.getFullYear() === now.getFullYear();
-
-    if (isCurrentMonth) {
-      // Current month → rely on Student's live active_status field
-      return { active_status: "in_active" };
-    }
-
-    // Past month → rely on the ActiveOrInactive history record
     return {
-      activeOrInactiveDetails: {
-        $elemMatch: { activeStatus: "in_active" },
-      },
+      $and: [
+        // ✅ لازم يكون in_active في جدول Student أساساً
+        { active_status: "in_active" },
+        {
+          $or: [
+            // آخر سجل قبل endDate هو in_active
+            {
+              activeOrInactiveDetails: {
+                $elemMatch: { activeStatus: "in_active" },
+              },
+            },
+            // مفيش سجلات خالص بس Student نفسه in_active
+            { activeOrInactiveDetails: { $size: 0 } },
+          ],
+        },
+      ],
     };
   };
 
-  // ✅ Fix 2: Only include $lookup when a date range is given (past month needs it)
-  const needsLookup = hasDateRange && (() => {
-    const now = new Date();
-    return !(
-      parsedStartDate.getMonth() === now.getMonth() &&
-      parsedStartDate.getFullYear() === now.getFullYear()
-    );
-  })();
+  // ✅ $lookup only needed for past months
+  const needsLookup = hasDateRange && !isCurrentMonth;
 
   const lookupStage = needsLookup
     ? [
@@ -2061,17 +2108,15 @@ router.get("/get-inactive-students", async (req, res) => {
                 $match: {
                   $and: [
                     { $expr: { $eq: ["$student", "$$studentId"] } },
-                    { activeStatus: "in_active" },
-                    // ✅ Fix 3: both $gte and $lt restored for correct range
-                    {
-                      activatedDate: {
-                        // $gt: parsedStartDate,
-                        $lt: parsedEndDate,
-                      },
-                    },
+                    // ✅ كل السجلات قبل نهاية الشهر المختار
+                    { activatedDate: { $lt: parsedEndDate } },
                   ],
                 },
               },
+              // ✅ رتّب من الأحدث للأقدم
+              { $sort: { activatedDate: -1 } },
+              // ✅ خد آخر سجل بس (الأحدث قبل endDate)
+              { $limit: 1 },
               {
                 $project: {
                   student: 1,
@@ -2090,14 +2135,11 @@ router.get("/get-inactive-students", async (req, res) => {
     ...lookupStage,
     {
       $match: {
-        active_status:"in_active",
         ...buildSearchMatch(),
         ...buildDeactivatedMatch(),
       },
     },
-    {
-      $sort: { updatedAt: -1 },
-    },
+    { $sort: { updatedAt: -1 } },
     {
       $facet: {
         metaData: [
@@ -2109,9 +2151,7 @@ router.get("/get-inactive-students", async (req, res) => {
             },
           },
         ],
-        totalAmount: [
-          { $group: { _id: null, total: { $sum: "$amount" } } },
-        ],
+        totalAmount: [{ $group: { _id: null, total: { $sum: "$amount" } } }],
         data: [
           { $skip: Number((page - 1) * limit) },
           { $limit: Number(limit) },
@@ -2120,7 +2160,6 @@ router.get("/get-inactive-students", async (req, res) => {
     },
   ])
     .then((data) => {
-      // ✅ Fix 4: clean response shape without mutating the result object
       const [result] = data;
       res.status(200).json({
         metaData: {
@@ -2149,16 +2188,16 @@ router.post(
         },
       ],
     });
-    const students = await Student.find({active_status:'in_active'})
+    const students = await Student.find({ active_status: "in_active" });
     const idList = await inActiveData.map((e) => e.student);
     console.log(idList);
-    
+
     const activeStatus = await Student.updateMany(
       { _id: { $in: idList } },
-      { $set: { active_status: "in_active" } }
+      { $set: { active_status: "in_active" } },
     );
     res.status(200).send(activeStatus);
-  }
+  },
 );
 
 module.exports = router;
