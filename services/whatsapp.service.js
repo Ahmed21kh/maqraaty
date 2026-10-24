@@ -8,7 +8,9 @@ let client = null;
 const state = {
   qrImage: null,
   status: "disconnected",
-  qrValue: null
+  qrValue: null,
+  // set when this machine cannot run WhatsApp at all (no Chrome, e.g. a hosted server)
+  unavailable: null,
 };
 
 // --- watchdog state ---
@@ -65,6 +67,7 @@ async function forceRebuild(io, reasonCode) {
 
 function initWhatsApp(io) {
   if (client) return client;
+  if (state.unavailable) return null; // no point retrying: Chrome is not installed here
 
   client = new Client({
     authStrategy: new LocalAuth({
@@ -159,7 +162,19 @@ function initWhatsApp(io) {
 
   client.initialize().catch((err) => {
     console.error("WhatsApp client failed to initialize:", err);
-    forceRebuild(io, "initialize_failed");
+    if (/Could not find (Google )?Chrome|Could not find browser/i.test(String(err?.message))) {
+      // Retrying cannot help and, done in a tight loop, starves a small hosted server. Report it once and stop.
+      clearWatchdogs();
+      client = null;
+      state.status = "disconnected";
+      state.unavailable = "WhatsApp غير متاح على هذا السيرفر (المتصفح غير مثبت). شغّله من البرنامج المثبت على الجهاز.";
+      io.emit("whatsapp:unavailable", { message: state.unavailable });
+      io.emit("whatsapp:loading", { loading: false, count: 0 });
+      io.emit("whatsapp:loading_qr", { loading: false });
+      return;
+    }
+    // other failures: rebuild, but not in a tight loop
+    setTimeout(() => forceRebuild(io, "initialize_failed"), 15_000);
   });
 
   return client;

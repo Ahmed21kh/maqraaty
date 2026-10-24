@@ -48,8 +48,11 @@
     console.log("Angular client connected:", socket.id);
     
     // send current state right away so a newly connected/reconnected client is caught up
-    const { status , qrValue } = getState();
-    if (qrValue) {
+    const { status , qrValue, unavailable } = getState();
+    if (unavailable) {
+      socket.emit("whatsapp:unavailable", { message: unavailable });
+      socket.emit("whatsapp:loading_qr", { loading: false });
+    } else if (qrValue) {
       socket.emit("whatsapp:qr", qrValue);
     }else {
       io.emit("whatsapp:loading_qr", {loading: true});
