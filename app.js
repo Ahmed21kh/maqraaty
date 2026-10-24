@@ -18,10 +18,13 @@
     pingInterval: 25000,
   });
 
-  // Hosted deployments (Render) set MONGODB_URI (e.g. a MongoDB Atlas connection string); locally it falls back to the PC's own MongoDB.
+  // Database: hosted deployments (Render) must set MONGODB_URI to the MongoDB Atlas connection string
+  // (Render dashboard -> Environment); on a PC it falls back to the local MongoDB.
   const url = process.env.MONGODB_URI || "mongodb://localhost:27017/Maqraaty";
-  // const url = "mongodb+srv://ah_db_user:Ah20192344@newcluster.iloyqea.mongodb.net/Maqraaty";
-
+  if (process.env.RENDER && !process.env.MONGODB_URI) {
+    console.error("MONGODB_URI is not set. Add it in the Render dashboard (Environment) and redeploy.");
+    process.exit(1);
+  }
 
   app.use(bodyparser.json());
   app.use(cors());
