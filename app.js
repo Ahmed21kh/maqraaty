@@ -36,13 +36,21 @@
   app.use("/uploads", express.static("uploads"));
 
   const distPath = path.join(__dirname, "dist/maqraaty_2/browser");
-  app.use(express.static(distPath));
+  // The desktop app serves the bundled Angular build. A hosted API (Render) does not: the UI lives on Vercel,
+  // and a half-deployed copy of it only produced a blank page with "MIME type text/html" script errors.
+  const serveUi = !process.env.RENDER && fs.existsSync(path.join(distPath, "index.html"));
+  if (serveUi) app.use(express.static(distPath));
 
   app.use("/api", studentRoutes);
 
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(distPath, "index.html"));
-  });
+  if (serveUi) {
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  } else {
+    app.get("/", (req, res) => res.json({ status: "ok", service: "maqraaty-api" }));
+    app.use((req, res) => res.status(404).json({ message: "Not found" }));
+  }
 
   io.on("connection", (socket) => {
     console.log("Angular client connected:", socket.id);
