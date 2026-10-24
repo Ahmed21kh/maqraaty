@@ -1028,49 +1028,47 @@ router.get("/get_not_pay", async (req, res) => {
   const today = new Date(); // ✅ Fix 1: defined today
 
   const matchData = () => {
+    const match = {};
+
     if (startDate && endDate) {
-      return {
-        date: {
+       match.date = {
           $gte: new Date(startDate),
           $lte: new Date(endDate),
-        },
-      };
-    } else {
-      return {};
-    }
+        }
+    } 
+    
+    return match;
   };
 
   const matchStudents = () => {
+    const match = {};
+
     if (code) {
-      return { code: Number(code) };
+      match.code= Number(code);
     }
+
     if (name) {
-      return {
-        $expr: {
+      match.$expr = {
           $regexMatch: {
             input: "$name",
             regex: name,
             options: "i",
-          },
-        },
+          }
       };
     }
+
     if (phone) {
-      return {
-        $or: [
+       match.$or = [
           { phone_1: { $regex: phone, $options: "i" } },
           { phone_2: { $regex: phone, $options: "i" } },
           { phone_3: { $regex: phone, $options: "i" } },
-        ],
-      };
+        ]
     }
+
     if (endDate) {
-      return {
-        date: { $lte: new Date(endDate) },
-      };
-    } else {
-      return {};
-    }
+        match.date = { $lte: new Date(endDate) }
+    } 
+      return match;
   };
 
   const matchActiveOrInactive = () => {
@@ -1197,6 +1195,381 @@ router.get("/get_not_pay", async (req, res) => {
     .catch((e) => {
       res.status(500).json({ message: e.message });
     });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Paid expenses (المصروفات المدفوعة)
+//
+// A ledger of every payment recorded for an existing student, newest first, with
+// totals for the whole filtered set (not just the current page).
+//
+//   GET /paid-expenses?page=1&limit=20&from=YYYY-MM-DD&to=YYYY-MM-DD&code=&name=&phone=
+//   GET /paid-expenses/monthly?year=2026
+//
+// `from` / `to` are calendar days (inclusive) in the server's local time zone — the same
+// zone the payment dates were entered in.
+// ─────────────────────────────────────────────────────────────────────────────
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const DAY_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Builds the `date` filter. Returns `null` when a value is not a valid YYYY-MM-DD day. */
+function paymentDateRange(from, to) {
+  const range = {};
+  if (from) {
+    if (!DAY_FORMAT.test(from)) return null;
+    range.$gte = new Date(`${from}T00:00:00`);
+  }
+  if (to) {
+    if (!DAY_FORMAT.test(to)) return null;
+    range.$lte = new Date(`${to}T23:59:59.999`);
+  }
+  if (Object.values(range).some((d) => Number.isNaN(d.getTime()))) return null;
+  return range;
+}
+
+/** Student-side filters (applied after the join). Text is escaped, never used as a raw regex. */
+function paidExpensesStudentMatch({ code, name, phone }) {
+  const match = {};
+  if (code !== undefined && String(code).trim() !== "") {
+    const parsed = Number(code);
+    if (!Number.isNaN(parsed)) match["studentDetails.code"] = parsed;
+  }
+  if (name && String(name).trim() !== "") {
+    match["studentDetails.name"] = {
+      $regex: escapeRegex(String(name).trim()),
+      $options: "i",
+    };
+  }
+  if (phone && String(phone).trim() !== "") {
+    const rx = { $regex: escapeRegex(String(phone).trim()), $options: "i" };
+    match.$or = [
+      { "studentDetails.phone_1": rx },
+      { "studentDetails.phone_2": rx },
+      { "studentDetails.phone_3": rx },
+    ];
+  }
+  return match;
+}
+
+router.get("/paid-expenses", async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const { from, to } = req.query;
+
+    const dateRange = paymentDateRange(from, to);
+    if (dateRange === null) {
+      return res.status(400).json({ message: "from / to must be valid dates in the form YYYY-MM-DD" });
+    }
+
+    const pipeline = [];
+    if (Object.keys(dateRange).length) pipeline.push({ $match: { date: dateRange } });
+    pipeline.push(
+      {
+        $lookup: {
+          from: "students",
+          localField: "student",
+          foreignField: "_id",
+          as: "studentDetails",
+        },
+      },
+      // payments whose student was deleted are left out
+      { $unwind: { path: "$studentDetails", preserveNullAndEmptyArrays: false } },
+    );
+    const studentMatch = paidExpensesStudentMatch(req.query);
+    if (Object.keys(studentMatch).length) pipeline.push({ $match: studentMatch });
+
+    pipeline.push(
+      { $sort: { date: -1, createdAt: -1, _id: -1 } },
+      {
+        $facet: {
+          total: [{ $count: "total" }],
+          summary: [
+            {
+              $group: {
+                _id: null,
+                totalAmount: { $sum: "$amount" },
+                paymentsCount: { $sum: 1 },
+                students: { $addToSet: "$student" },
+              },
+            },
+          ],
+          data: [
+            { $skip: (page - 1) * limit },
+            { $limit: limit },
+            {
+              $project: {
+                amount: 1,
+                date: 1,
+                student: 1,
+                createdAt: 1,
+                "studentDetails._id": 1,
+                "studentDetails.code": 1,
+                "studentDetails.name": 1,
+                "studentDetails.image": 1,
+                "studentDetails.phone_1": 1,
+                "studentDetails.phone_2": 1,
+                "studentDetails.phone_3": 1,
+                "studentDetails.active_status": 1,
+              },
+            },
+          ],
+        },
+      },
+    );
+
+    const [result] = await Payment.aggregate(pipeline);
+    const total = result.total[0]?.total || 0;
+    const summary = result.summary[0];
+    const totalAmount = summary?.totalAmount || 0;
+    const paymentsCount = summary?.paymentsCount || 0;
+
+    res.status(200).send({
+      data: result.data,
+      metaData: {
+        total,
+        count: result.data.length,
+        pageNumber: page,
+        totalPages: Math.ceil(total / limit),
+      },
+      summary: {
+        totalAmount,
+        paymentsCount,
+        studentsCount: summary?.students?.length || 0,
+        averagePayment: paymentsCount ? Math.round(totalAmount / paymentsCount) : 0,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Totals per month of one year (for the month picker / mini chart).
+// Months are bucketed in Node (local time zone) rather than with MongoDB's `$month` + timezone, because the
+// bundled MongoDB time-zone data does not know Egypt's daylight saving time (see /attendance-stats).
+router.get("/paid-expenses/monthly", async (req, res) => {
+  try {
+    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+    if (year < 2000 || year > 2100) {
+      return res.status(400).json({ message: "year must be between 2000 and 2100" });
+    }
+
+    // coarse UTC window (±2 days around the year); exact local bucketing happens below
+    const payments = await Payment.aggregate([
+      {
+        $match: {
+          date: { $gte: new Date(Date.UTC(year - 1, 11, 30)), $lt: new Date(Date.UTC(year + 1, 0, 3)) },
+        },
+      },
+      { $lookup: { from: "students", localField: "student", foreignField: "_id", as: "studentDetails" } },
+      { $unwind: { path: "$studentDetails", preserveNullAndEmptyArrays: false } },
+      { $project: { _id: 0, amount: 1, date: 1 } },
+    ]);
+
+    const months = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, total: 0, count: 0 }));
+    for (const p of payments) {
+      const when = new Date(p.date);
+      if (when.getFullYear() !== year) continue;
+      months[when.getMonth()].total += p.amount || 0;
+      months[when.getMonth()].count += 1;
+    }
+    res.status(200).send({
+      year,
+      months,
+      yearTotal: months.reduce((sum, m) => sum + m.total, 0),
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attendance statistics (احصائيات الحضور بالمقرأة)
+//
+//   GET /attendance-stats?year=2026&month=10&scope=all|active
+//
+// Attendance is stored as one document per student holding an array of class days
+// (`attend_days_month`), each day with a status:  حاضر (present) · غائب (absent) · ___ (not recorded).
+// Days are scheduled in advance, so most `___` days are simply still in the future — the attendance
+// RATE is therefore computed on recorded days only:  present / (present + absent).
+//
+//  - `month` omitted  → the summary covers the whole year; `daily` is not returned.
+//  - `scope=active`   → only students that are currently active; default is every student.
+//
+// Months / days are bucketed here in Node (local time zone), NOT with MongoDB's `$dateToParts`:
+// the bundled MongoDB time-zone data does not know Egypt's daylight saving time, so around midnight
+// it would put summer days into the previous day / month. MongoDB only does a coarse window filter.
+//
+// Student buckets (per period):
+//   came        — attended at least once                       (القادمون)
+//   cameRate    — came / scheduled, but null while nothing has been recorded in the period
+//   absentOnly  — has absences but never attended
+//   noRecord    — scheduled, nothing recorded yet
+// ─────────────────────────────────────────────────────────────────────────────
+const attendanceRate = (present, absent) =>
+  present + absent > 0 ? Math.round((present / (present + absent)) * 1000) / 10 : null;
+const percentOf = (part, whole) => (whole > 0 ? Math.round((part / whole) * 1000) / 10 : null);
+
+router.get("/attendance-stats", async (req, res) => {
+  try {
+    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+    if (year < 2000 || year > 2100) {
+      return res.status(400).json({ message: "year must be between 2000 and 2100" });
+    }
+    let month = null;
+    if (req.query.month !== undefined && req.query.month !== "") {
+      month = parseInt(req.query.month, 10);
+      if (!(month >= 1 && month <= 12)) {
+        return res.status(400).json({ message: "month must be between 1 and 12" });
+      }
+    }
+    const scope = req.query.scope === "active" ? "active" : "all";
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    // Coarse UTC window around the year (±2 days covers every local offset); exact bucketing is below.
+    const windowFrom = new Date(Date.UTC(year - 1, 11, 30));
+    const windowTo = new Date(Date.UTC(year + 1, 0, 3));
+    const iso = (d) => d.toISOString();
+
+    const rows = await Attendance.aggregate([
+      { $lookup: { from: "students", localField: "student", foreignField: "_id", as: "studentDetails" } },
+      { $unwind: "$studentDetails" }, // attendance of deleted students is ignored
+      ...(scope === "active" ? [{ $match: { "studentDetails.active_status": "active" } }] : []),
+      { $unwind: "$attend_days_month" },
+      {
+        $match: {
+          $or: [
+            // days are stored as ISO strings, which sort chronologically…
+            { "attend_days_month.date": { $gte: iso(windowFrom), $lt: iso(windowTo) } },
+            // …but tolerate real BSON dates too
+            { "attend_days_month.date": { $gte: windowFrom, $lt: windowTo } },
+          ],
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          student: 1,
+          status: "$attend_days_month.status",
+          weekday: "$attend_days_month.day",
+          date: "$attend_days_month.date",
+        },
+      },
+    ]);
+
+    // ---- bucket in local time
+    const newMonth = () => ({ present: 0, absent: 0, total: 0, scheduled: new Set(), came: new Set() });
+    const months = Array.from({ length: 12 }, newMonth);
+    const period = { present: 0, absent: 0, total: 0 };
+    const periodStudents = new Map(); // student -> { present, absent }
+    const days = new Map(); // day of month -> { present, absent, total, weekday }
+
+    for (const r of rows) {
+      const when = new Date(r.date);
+      if (Number.isNaN(when.getTime()) || when.getFullYear() !== year) continue;
+      const m = when.getMonth(); // 0-based
+      const present = r.status === "حاضر" ? 1 : 0;
+      const absent = r.status === "غائب" ? 1 : 0;
+      const sid = String(r.student);
+
+      const bucket = months[m];
+      bucket.present += present;
+      bucket.absent += absent;
+      bucket.total += 1;
+      bucket.scheduled.add(sid);
+      if (present) bucket.came.add(sid);
+
+      if (month === null || m + 1 === month) {
+        period.present += present;
+        period.absent += absent;
+        period.total += 1;
+        const s = periodStudents.get(sid) || { present: 0, absent: 0 };
+        s.present += present;
+        s.absent += absent;
+        periodStudents.set(sid, s);
+        if (month !== null) {
+          const day = days.get(when.getDate()) || { present: 0, absent: 0, total: 0, weekday: r.weekday };
+          day.present += present;
+          day.absent += absent;
+          day.total += 1;
+          days.set(when.getDate(), day);
+        }
+      }
+    }
+
+    let came = 0;
+    let absentOnly = 0;
+    for (const s of periodStudents.values()) {
+      if (s.present > 0) came += 1;
+      else if (s.absent > 0) absentOnly += 1;
+    }
+    const scheduled = periodStudents.size;
+    const recorded = period.present + period.absent;
+
+    const monthly = months.map((m, i) => ({
+      month: i + 1,
+      present: m.present,
+      absent: m.absent,
+      unrecorded: m.total - m.present - m.absent,
+      attendanceRate: attendanceRate(m.present, m.absent),
+      studentsScheduled: m.scheduled.size,
+      studentsCame: m.came.size,
+      cameRate: m.present + m.absent > 0 ? percentOf(m.came.size, m.scheduled.size) : null,
+    }));
+
+    const [totalStudents, activeStudents] = await Promise.all([
+      Student.countDocuments({}),
+      Student.countDocuments({ active_status: "active" }),
+    ]);
+
+    const pad = (n) => String(n).padStart(2, "0");
+    res.status(200).send({
+      year,
+      month,
+      scope,
+      timezone,
+      summary: {
+        present: period.present,
+        absent: period.absent,
+        unrecorded: period.total - recorded,
+        scheduledDays: period.total,
+        recordedDays: recorded,
+        attendanceRate: attendanceRate(period.present, period.absent),
+        students: {
+          scheduled,
+          came,
+          absentOnly,
+          noRecord: scheduled - came - absentOnly,
+          // no recorded day yet ⇒ "no data", not "0% came"
+          cameRate: recorded > 0 ? percentOf(came, scheduled) : null,
+        },
+      },
+      ...(month
+        ? {
+            daily: [...days.entries()]
+              .sort((a, b) => a[0] - b[0])
+              .map(([day, d]) => ({
+                date: `${year}-${pad(month)}-${pad(day)}`,
+                weekday: d.weekday,
+                present: d.present,
+                absent: d.absent,
+                unrecorded: d.total - d.present - d.absent,
+                attendanceRate: attendanceRate(d.present, d.absent),
+              })),
+          }
+        : {}),
+      monthly,
+      // current snapshot, independent of the period
+      students: {
+        total: totalStudents,
+        active: activeStudents,
+        inactive: totalStudents - activeStudents,
+        activeRate: percentOf(activeStudents, totalStudents),
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 //Get Attendance
@@ -1643,12 +2016,14 @@ router.get("/reports", async (req, res) => {
           date: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
         },
         totalAmount: { $sum: "$amount" },
+        payingStudents: { $addToSet: "$student" },
       },
     },
     {
       $project: {
         date: "$_id.date",
         totalAmount: 1,
+        studentsCount: { $size: "$payingStudents" },
         _id: 0,
       },
     },
@@ -2199,5 +2574,61 @@ router.post(
     res.status(200).send(activeStatus);
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Student options for dropdowns, paginated (so the browser never downloads the whole list)
+//
+//   GET /students_options?page=1&limit=30&search=احمد&status=active&exclude=id1,id2
+//   GET /students_options?ids=id1,id2          → just those students (to label a saved selection)
+//
+//   search   name (case-insensitive contains) or code (digits)
+//   status   active | in_active   (omit for everyone)
+//   exclude  ids to leave out (e.g. relatives already chosen)
+//   → { data: [{ _id, name, code }], total, page, limit, hasMore }
+//
+// Students without a name come last, ordered by code.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/students_options", async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
+    const toIds = (value) =>
+      String(value || "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter((v) => objectId.isValid(v))
+        .map((v) => new objectId(v));
+
+    const match = {};
+    if (req.query.ids) {
+      match._id = { $in: toIds(req.query.ids) };
+    } else {
+      if (req.query.status) match.active_status = String(req.query.status);
+      const exclude = toIds(req.query.exclude);
+      if (exclude.length) match._id = { $nin: exclude };
+      const search = String(req.query.search || "").trim();
+      if (search) {
+        const or = [{ name: { $regex: escapeRegex(search), $options: "i" } }];
+        if (/^\d+$/.test(search)) or.push({ code: Number(search) });
+        match.$or = or;
+      }
+    }
+
+    const [rows, total] = await Promise.all([
+      Student.aggregate([
+        { $match: match },
+        { $addFields: { emptyName: { $cond: [{ $in: ["$name", [null, ""]] }, 1, 0] } } },
+        { $sort: { emptyName: 1, name: 1, code: 1 } },
+        { $skip: (page - 1) * limit },
+        { $limit: limit },
+        { $project: { name: 1, code: 1 } },
+      ]),
+      Student.countDocuments(match),
+    ]);
+    res.status(200).send({ data: rows, total, page, limit, hasMore: page * limit < total });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
 
 module.exports = router;

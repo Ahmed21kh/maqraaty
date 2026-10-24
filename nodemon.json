@@ -1,0 +1,9 @@
+{
+    "ignore": [
+      "node_modules/*",
+      "uploads/*",
+      ".wwebjs_auth/*",
+      "dist/*"
+    ],
+    "watch": ["*.js", "routes/", "services/"]
+}

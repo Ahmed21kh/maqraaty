@@ -1,1 +1,0 @@
-import{Aa as i}from"./chunk-TQEZ3QQU.js";var p=(()=>{class r{transform(t,...e){return t==null||t===""||t[0]===""?"____":t}static{this.\u0275fac=function(e){return new(e||r)}}static{this.\u0275pipe=i({name:"empty",type:r,pure:!0,standalone:!0})}}return r})();export{p as a};

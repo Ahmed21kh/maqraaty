@@ -6,3 +6,8 @@
 .env
 /out
 /uploads
+/.wwebjs_auth
+
+# build output
+/dist
+/win32

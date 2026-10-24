@@ -1,55 +1,145 @@
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const path = require("path");
-const bodyparser = require("body-parser");
-const fs = require("fs");
-const studentRoutes = require('./routes/studentsWithMongoose');
+  const express = require("express");
+  const mongoose = require("mongoose");
+  const cors = require("cors");
+  const path = require("path");
+  const bodyparser = require("body-parser");
+  const fs = require("fs");
+  const http = require("http");
+  const { Server } = require("socket.io");
+  const studentRoutes = require("./routes/studentsWithMongoose");
+  const { initWhatsApp, getClient, getState, sendBulkMessages , logoutWhatsApp } = require("./services/whatsapp.service");
 
-const app = express();
+  const app = express();
+  const server = http.createServer(app); // wrap express in an http server
+  const io = new Server(server, {
+    cors: { origin: "*" },
+    transports: ["polling", "websocket"],
+    pingTimeout: 30000,   // default is 20000ms — give it more slack
+    pingInterval: 25000,
+  });
 
-// 1. إعدادات قاعدة البيانات (MongoDB Atlas)
-const url = "mongodb+srv://ah_db_user:Ah20192344@newcluster.iloyqea.mongodb.net/Maqraaty";
-// const url = "mongodb://localhost:27017/Maqraaty";
+  const url = "mongodb://localhost:27017/Maqraaty";
+  // const url = "mongodb+srv://ah_db_user:Ah20192344@newcluster.iloyqea.mongodb.net/Maqraaty";
 
-// 2. Middlewares
-app.use(bodyparser.json());
-app.use(cors());
 
-// 3. إدارة الملفات المرفوعة (Uploads)
-const folderPath1 = path.join(__dirname, "uploads");
-if (!fs.existsSync(folderPath1)) {
+  app.use(bodyparser.json());
+  app.use(cors());
+
+  const folderPath1 = path.join(__dirname, "uploads");
+  if (!fs.existsSync(folderPath1)) {
     fs.mkdirSync(folderPath1, { recursive: true });
-}
-app.use('/uploads', express.static('uploads'));
+  }
+  app.use("/uploads", express.static("uploads"));
 
-// 4. تقديم ملفات الأنجولار (CSR Build)
-// تأكد أن المسار يطابق مجلد الـ build الفعلي لديك
-const distPath = path.join(__dirname, "dist/maqraaty_2/browser");
-app.use(express.static(distPath));
+  const distPath = path.join(__dirname, "dist/maqraaty_2/browser");
+  app.use(express.static(distPath));
 
-// 5. مسارات الـ API
-app.use("/api", studentRoutes);
+  app.use("/api", studentRoutes);
 
-// 6. توجيه كافة الطلبات الأخرى لملف index.html (Angular Routing)
-app.get("*", (req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
-});
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
 
-// 7. إعداد المنفذ والتشغيل (مهم جداً للـ Deployment)
-const PORT = process.env.PORT || 8000; // سيستخدم المنفذ المتاح على السيرفر أو 8080 محلياً
-
-const startServer = async () => {
-    try {
-        await mongoose.connect(url);
-        console.log("Connected to MongoDB Atlas Successfully");
-        
-        app.listen(PORT, () => {
-            console.log(`Server is running on port ${PORT}`);
-        });
-    } catch (error) {
-        console.error("Database connection failed:", error);
+  io.on("connection", (socket) => {
+    console.log("Angular client connected:", socket.id);
+    
+    // send current state right away so a newly connected/reconnected client is caught up
+    const { status , qrValue } = getState();
+    if (qrValue) {
+      socket.emit("whatsapp:qr", qrValue);
+    }else {
+      io.emit("whatsapp:loading_qr", {loading: true});
     }
-};
+    if (status === "connected") {
+      socket.emit("whatsapp:ready", { status: "connected" });
+    } else if (status === "authenticated") {
+      socket.emit("whatsapp:authenticated");
+    }
 
-startServer();
+    socket.on("whatsapp:send", async ({ to, message }) => {
+      try {
+        const activeClient = getClient();
+        if (!activeClient) {
+          return socket.emit("whatsapp:send_ack", { ok: false, error: "WhatsApp not initialized" });
+        }
+          console.log({to , message});
+          
+        const chatId = to.includes("@c.us") ? to : `${to}@c.us`;
+    
+        // isRegisteredUser/getNumberId is currently broken upstream — skip it
+        await activeClient.sendMessage(chatId, message);
+        socket.emit("whatsapp:send_ack", { ok: true });
+      } catch (err) {
+        console.error("sendMessage error:", err);
+        socket.emit("whatsapp:send_ack", { ok: false, error: err.message });
+      }
+    });
+
+    socket.on("whatsapp:send_bulk", async ({ recipients, message }) => {
+      const activeClient = getClient();
+      if (!activeClient) {
+        return socket.emit("whatsapp:bulk_done", { error: "WhatsApp not initialized" });
+      }
+      await sendBulkMessages(io, socket, recipients, message);
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.log('socket disconnected:', reason);
+    });
+
+    socket.on("whatsapp:logout", async () => {
+      await logoutWhatsApp(io);
+    });
+  });
+
+  const errorLogPath = path.join(__dirname, 'server-errors.log');
+  function logToFile(msg) {
+    fs.appendFileSync(errorLogPath, `${new Date().toISOString()} ${msg}\n`);
+  }
+  
+  io.engine.on("connection_error", (err) => {
+    logToFile(`connection_error code=${err.code} message=${err.message} context=${JSON.stringify(err.context)}`);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    let activeClient = getClient();
+    console.error('Unhandled Rejection (WhatsApp):', reason);
+    if (reason?.message?.includes('detached Frame')) {
+      console.log('Detached frame detected, forcing client rebuild...');
+      if (activeClient) {
+        activeClient.destroy().catch(() => {});
+      }
+      activeClient = null;
+      initWhatsApp(io); // rebuild from scratch
+    }
+  });
+
+  io.on('disconnect', (reason) => {
+    console.log('socket disconnected:', reason);
+    let activeClient = getClient();
+    if (activeClient) {
+      activeClient.destroy().catch(() => {});
+    }
+    activeClient = null;
+  });
+
+  let whatsappClient;
+
+  const PORT = process.env.PORT || 8000;
+
+  const startServer = async () => {
+    try {
+      await mongoose.connect(url);
+      console.log("Connected to MongoDB Successfully");
+
+      whatsappClient = initWhatsApp(io);
+
+      server.listen(PORT, () => {
+        console.log(`Server is running on port ${PORT}`);
+      });
+    } catch (error) {
+      console.error("Database connection failed:", error);
+    }
+  };
+
+  startServer();
