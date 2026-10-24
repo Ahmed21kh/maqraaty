@@ -151,6 +151,16 @@
       await mongoose.connect(url);
       console.log("Connected to MongoDB Successfully");
 
+      await new Promise((resolve, reject) => {
+        // a busy port (a second copy of the app) is reported to the caller instead of crashing the process
+        server.once("error", reject);
+        server.listen(PORT, () => {
+          server.off("error", reject);
+          console.log(`Server is running on port ${PORT}`);
+          resolve();
+        });
+      });
+      // started only once the port is ours, so a second copy of the app never launches a second WhatsApp browser
       // WhatsApp needs Chrome; on a host without it (or with WHATSAPP_ENABLED=false) the API still starts.
       if (process.env.WHATSAPP_ENABLED !== "false") {
         try {
@@ -159,14 +169,27 @@
           console.error("WhatsApp bridge not started:", e.message);
         }
       }
-
-      server.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
-      });
+      return { ok: true };
     } catch (error) {
-      console.error("Database connection failed:", error);
+      console.error("Server start failed:", error);
       process.exitCode = 1;
+      return { ok: false, error };
     }
   };
 
-  startServer();
+  // The desktop shell (main.js) waits for `ready` before opening the window, and calls `shutdown` when the app quits
+  // so the server, the database connection and the WhatsApp browser do not linger.
+  const ready = startServer();
+  const shutdown = async () => {
+    try {
+      await getClient()?.destroy();
+    } catch {}
+    try {
+      io.close();
+      await new Promise((resolve) => server.close(resolve));
+    } catch {}
+    try {
+      await mongoose.disconnect();
+    } catch {}
+  };
+  module.exports = { ready, shutdown };
