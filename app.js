@@ -18,7 +18,8 @@
     pingInterval: 25000,
   });
 
-  const url = "mongodb://localhost:27017/Maqraaty";
+  // Hosted deployments (Render) set MONGODB_URI (e.g. a MongoDB Atlas connection string); locally it falls back to the PC's own MongoDB.
+  const url = process.env.MONGODB_URI || "mongodb://localhost:27017/Maqraaty";
   // const url = "mongodb+srv://ah_db_user:Ah20192344@newcluster.iloyqea.mongodb.net/Maqraaty";
 
 
@@ -132,13 +133,21 @@
       await mongoose.connect(url);
       console.log("Connected to MongoDB Successfully");
 
-      whatsappClient = initWhatsApp(io);
+      // WhatsApp needs Chrome; on a host without it (or with WHATSAPP_ENABLED=false) the API still starts.
+      if (process.env.WHATSAPP_ENABLED !== "false") {
+        try {
+          whatsappClient = initWhatsApp(io);
+        } catch (e) {
+          console.error("WhatsApp bridge not started:", e.message);
+        }
+      }
 
       server.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
       });
     } catch (error) {
       console.error("Database connection failed:", error);
+      process.exitCode = 1;
     }
   };
 
