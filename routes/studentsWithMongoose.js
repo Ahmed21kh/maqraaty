@@ -2581,10 +2581,10 @@ router.post(
 //   GET /students_options?page=1&limit=30&search=احمد&status=active&exclude=id1,id2
 //   GET /students_options?ids=id1,id2          → just those students (to label a saved selection)
 //
-//   search   name (case-insensitive contains) or code (digits)
+//   search   name (case-insensitive contains), code (digits) or phone number (5+ digits)
 //   status   active | in_active   (omit for everyone)
 //   exclude  ids to leave out (e.g. relatives already chosen)
-//   → { data: [{ _id, name, code }], total, page, limit, hasMore }
+//   → { data: [{ _id, name, code, image }], total, page, limit, hasMore }
 //
 // Students without a name come last, ordered by code.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2609,7 +2609,14 @@ router.get("/students_options", async (req, res) => {
       const search = String(req.query.search || "").trim();
       if (search) {
         const or = [{ name: { $regex: escapeRegex(search), $options: "i" } }];
-        if (/^\d+$/.test(search)) or.push({ code: Number(search) });
+        if (/^\d+$/.test(search)) {
+          or.push({ code: Number(search) });
+          // long digit strings are phone numbers (any of the three)
+          if (search.length >= 5) {
+            const rx = { $regex: escapeRegex(search), $options: "i" };
+            or.push({ phone_1: rx }, { phone_2: rx }, { phone_3: rx });
+          }
+        }
         match.$or = or;
       }
     }
@@ -2621,7 +2628,7 @@ router.get("/students_options", async (req, res) => {
         { $sort: { emptyName: 1, name: 1, code: 1 } },
         { $skip: (page - 1) * limit },
         { $limit: limit },
-        { $project: { name: 1, code: 1 } },
+        { $project: { name: 1, code: 1, image: 1 } },
       ]),
       Student.countDocuments(match),
     ]);

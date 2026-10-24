@@ -26,8 +26,12 @@
     process.exit(1);
   }
 
-  app.use(bodyparser.json());
   app.use(cors());
+
+  // export / import routes parse their own bodies (large exports exceed the default JSON limit)
+  app.use("/api", require("./routes/filesRoutes"));
+
+  app.use(bodyparser.json());
 
   const folderPath1 = path.join(__dirname, "uploads");
   if (!fs.existsSync(folderPath1)) {

@@ -149,6 +149,8 @@
   "author": "Ahmed Khaled",
   "license": "ISC",
   "dependencies": {
+    "@fontsource/cairo": "^5.3.0",
+    "bidi-js": "^1.1.0",
     "bluebird": "^3.7.2",
     "body-parser": "^1.20.2",
     "connect": "^3.7.0",
@@ -166,6 +168,7 @@
     "mongoose-sequence": "^6.0.1",
     "multer": "^1.4.5-lts.1",
     "nodemon": "^3.0.2",
+    "pdfkit": "^0.20.2",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",
