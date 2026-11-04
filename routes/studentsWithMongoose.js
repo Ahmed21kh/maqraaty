@@ -40,7 +40,7 @@ function generateSixDigits() {
 let today = new Date(); // Get today's date
 let currentYear = today.getFullYear();
 let currentMonth = today.getMonth() + 1; // Adding 1 since months are 0-based
-let startDate = new Date(currentYear, currentMonth - 1, 0)
+let startDate = new Date(currentYear, currentMonth - 1, 1)
   .toLocaleDateString("en-CA")
   ?.split("T")[0];
 let endDate = new Date(currentYear, currentMonth, 1)
@@ -89,7 +89,6 @@ router.get("/students", async (req, res) => {
   const matchActiveOrInactive = () => {
     if (startDate) {
       const start = new Date(startDate);
-      start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
 
       // Check if the start date is in current month
@@ -668,7 +667,6 @@ router.get("/get_payments", async (req, res) => {
     if (startDate) {
       console.log(new Date(startDate));
       const start = new Date(startDate);
-      start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
       console.log(start.getMonth());
 
@@ -1074,7 +1072,6 @@ router.get("/get_not_pay", async (req, res) => {
   const matchActiveOrInactive = () => {
     if (startDate) {
       const start = new Date(startDate);
-      start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
 
       const isCurrentMonth =
@@ -1887,7 +1884,6 @@ router.get("/reports", async (req, res) => {
     if (startDate) {
       console.log(new Date(startDate));
       const start = new Date(startDate);
-      start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
       console.log(start.getMonth());
       if (start.getMonth() + 1 == today.getMonth() + 1) {
@@ -1912,7 +1908,6 @@ router.get("/reports", async (req, res) => {
     if (startDate) {
       console.log(new Date(startDate));
       const start = new Date(startDate);
-      start.setDate(start.getDate() + 1);
       start.setHours(0, 0, 0, 0);
       console.log(start.getMonth());
       if (start.getMonth() + 1 == today.getMonth() + 1) {
