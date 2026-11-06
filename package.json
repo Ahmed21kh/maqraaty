@@ -1,7 +1,7 @@
 {
   "name": "maqraaty_2-server",
   "productName": "مقرأتي",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "مقرأتي",
   "main": "main.js",
   "scripts": {

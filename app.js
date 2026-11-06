@@ -20,7 +20,10 @@
 
   // Database: hosted deployments (Render) must set MONGODB_URI to the MongoDB Atlas connection string
   // (Render dashboard -> Environment); on a PC it falls back to the local MongoDB.
-  const url = process.env.MONGODB_URI || "mongodb://localhost:27017/Maqraaty";
+  // On desktop app (Electron) or local PC, default to local MongoDB:
+  const isDesktop = Boolean(process.versions?.electron || process.env.IS_ELECTRON);
+  const localDbUrl = "mongodb://127.0.0.1:27017/Maqraaty";
+  const url = isDesktop ? (process.env.LOCAL_MONGODB_URI || localDbUrl) : (process.env.MONGODB_URI || localDbUrl);
   if (process.env.RENDER && !process.env.MONGODB_URI) {
     console.error("MONGODB_URI is not set. Add it in the Render dashboard (Environment) and redeploy.");
     process.exit(1);

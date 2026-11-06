@@ -115,7 +115,7 @@ async function readXlsx(buffer) {
 
 function htmlDocument(spec, word) {
   const color = themeOf(spec);
-  const landscape = spec.columns.length > 6;
+  const landscape = spec.columns.length > 9;
   const head = ["#", ...spec.columns.map((c) => c.header)].map((h) => `<th>${escapeHtml(h)}</th>`).join("");
   const body = spec.rows
     .map((values, r) => `<tr class="${r % 2 ? "alt" : ""}"><td class="n">${r + 1}</td>${values.map((v) => `<td>${escapeHtml(text(v)) || "—"}</td>`).join("")}</tr>`)
@@ -175,7 +175,7 @@ function runsOf(word) {
 function buildPdf(spec) {
   return new Promise((resolve, reject) => {
     const color = themeOf(spec);
-    const landscape = spec.columns.length > 6;
+    const landscape = spec.columns.length > 9;
     const doc = new PDFDocument({ size: "A4", layout: landscape ? "landscape" : "portrait", margin: 28, bufferPages: true, info: { Title: spec.title, Author: "مقرأتي" } });
     const chunks = [];
     doc.on("data", (c) => chunks.push(c));
@@ -267,7 +267,7 @@ function buildPdf(spec) {
       const wrapped = cells.map((c, i) => wrap(c, widths[i] - pad * 2, false, fontSize));
       const rowHeight = Math.max(...wrapped.map((l) => l.length)) * fontSize * 1.5 + pad * 2;
       if (y + rowHeight > bottom()) {
-        doc.addPage();
+        doc.addPage({ size: "A4", layout: landscape ? "landscape" : "portrait", margin: 28 });
         y = doc.page.margins.top;
         drawHeader();
       }
